@@ -35,7 +35,7 @@ func Test_reverseStringSlice(t *testing.T) {
 	}
 }
 
-func Test_formatIPDotRepr(t *testing.T) {
+func Test_formatIPDotNotation(t *testing.T) {
 	tests := []struct {
 		name  string
 		input net.IP
@@ -50,8 +50,8 @@ func Test_formatIPDotRepr(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := formatIPDotRepr(tt.input); got != tt.want {
-				t.Errorf("formatIPDotRepr() = %v, want %v", got, tt.want)
+			if got := formatIPDotNotation(tt.input); got != tt.want {
+				t.Errorf("formatIPDotNotation() = %v, want %v", got, tt.want)
 			}
 		})
 	}

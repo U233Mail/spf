@@ -51,43 +51,22 @@ const (
 	ResultPermError Result = "permerror"
 )
 
-// defaultMaxLookup DNS Lookup Limits https://datatracker.ietf.org/doc/html/rfc7208#section-4.6.4
-const defaultMaxLookup = 10
-
-func mappingQualifierResult(q Qualifier) Result {
-	switch q {
-	case QualifierPass:
-		return ResultPass
-	case QualifierFail:
-		return ResultFail
-	case QualifierSoftFail:
-		return ResultSoftFail
-	case QualifierNeutral:
-		return ResultNeutral
-	default:
-		return ResultNone
-	}
-}
-
-type DNSResolver interface {
-	LookupTXT(ctx context.Context, name string) ([]string, error)
-	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
-	LookupIP(ctx context.Context, network, host string) ([]net.IP, error)
-	LookupMX(ctx context.Context, name string) ([]*net.MX, error)
-	LookupAddr(ctx context.Context, addr string) ([]string, error)
-}
-
+// NewVerifier creates a new SPF Verifier
+// sender is the email address of the sender (we don't check if it's valid)
+// ip is the remote IP address of current connection
+// helloDomain is the domain of the SMTP HELO command (only used for %{h} macro)
 func NewVerifier(sender string, ip net.IP, helloDomain string) *Verifier {
 	atIdx := strings.LastIndexByte(sender, '@')
-	return &Verifier{
+	s := &Verifier{
 		sender:      sender,
 		domain:      sender[atIdx+1:],
 		ip:          ip,
 		helloDomain: helloDomain,
-		resolver:    net.DefaultResolver,
 		ctx:         context.TODO(),
 		lookups:     0,
 	}
+	s.SetResolver(net.DefaultResolver)
+	return s
 }
 
 // Verifier for SPF Version 1
@@ -97,23 +76,37 @@ type Verifier struct {
 	ip          net.IP
 	helloDomain string
 
-	resolver DNSResolver
+	resolver *LimitResolver
 	ctx      context.Context
 
 	lookups int // DNS lookup times
 }
 
-func (s *Verifier) Test(domain string) (Result, bool, error) {
-	// Query DNS for SPF record
-	if err := s.increaseLookup(); err != nil {
-		return ResultPermError, true, err
+func (s *Verifier) SetResolver(resolver DNSResolver) {
+	limited, ok := resolver.(*LimitResolver)
+	if ok {
+		s.resolver = limited
+	} else {
+		s.resolver = NewLimitResolver(resolver, defaultMaxLookups)
 	}
+}
+
+func (s *Verifier) Test() (Result, error) {
+	// todo: add timeout to context
+	//   MTAs or other processors SHOULD impose a limit on the maximum amount of elapsed time to evaluate check_host().
+	//   Such a limit SHOULD allow at least 20 seconds.
+	//   If such a limit is exceeded, the result of authorization SHOULD be "temperror".
+	return s.checkHost(s.domain)
+}
+
+// checkHost checks the SPF record on the given domain
+func (s *Verifier) checkHost(domain string) (Result, error) {
 	records, err := s.resolver.LookupTXT(s.ctx, domain)
 	if err != nil {
-		return ResultTempError, true, err
+		return ResultTempError, err
 	}
 
-	var redirectHost string
+	var redirectHost, explanationHost string
 
 	for _, txt := range records {
 		if !strings.HasPrefix(txt, "v=spf1 ") {
@@ -121,174 +114,197 @@ func (s *Verifier) Test(domain string) (Result, bool, error) {
 		}
 		items := strings.Fields(txt)
 		for _, item := range items[1:] {
-			item = strings.ToLower(item)
-
-			var qResult Result
-			switch Qualifier(item[0]) {
-			case QualifierPass, QualifierFail, QualifierNeutral, QualifierSoftFail:
-				qResult = mappingQualifierResult(Qualifier(item[0]))
-				item = item[1:]
-			default:
-				qResult = ResultPass
-			}
-
 			switch {
 			case strings.HasPrefix(item, "redirect="):
-				// redirect modifier
+				// modifier "redirect"
 				// https://datatracker.ietf.org/doc/html/rfc7208#section-6.1
 				redirectHost, err = s.expandMacros(item[8:])
 				if err != nil {
-					return ResultPermError, true, err
+					return ResultPermError, fmt.Errorf("spf: expand macros for %s failed: %w", item[8:], err)
 				}
 			case strings.HasPrefix(item, "exp="):
-				// explanation modifier
+				// modifier "exp" (explanation)
 				// https://datatracker.ietf.org/doc/html/rfc7208#section-6.2
-				// todo: implement
-				continue
-
-			case item == "all":
-				// mechanism "all"
-				// https://datatracker.ietf.org/doc/html/rfc7208#section-5.1
-				return qResult, true, nil
-
-			case strings.HasPrefix(item, "include:"):
-				// mechanism "include"
-				// https://datatracker.ietf.org/doc/html/rfc7208#section-5.2
-				host, err := s.expandMacros(item[8:])
+				explanationHost, err = s.expandMacros(item[8:])
 				if err != nil {
-					return ResultPermError, true, err
+					return ResultPermError, fmt.Errorf("spf: expand macros for %s failed: %w", item[8:], err)
 				}
 
-				if r, ok, err := s.Test(host); ok {
-					switch r {
-					case ResultPass:
-						return qResult, true, nil
-					case ResultPermError, ResultNone:
-						return ResultPermError, true, err
-					case ResultTempError:
-						return ResultTempError, true, err
-					default:
-						continue
+			default:
+				result, matched, err := s.checkMechanism(item)
+				if err != nil {
+					return result, err
+				} else if matched {
+					if result == ResultFail && explanationHost != "" {
+						// expItems, err := s.resolver.LookupTXT(s.ctx, explanationHost)
+						// todo: implement
 					}
+					return result, err
 				}
-
-			case strings.HasPrefix(item, "ip4:"), strings.HasPrefix(item, "ip6:"):
-				if r, ok, err := s.checkMechanismIP(item, qResult); ok {
-					return r, true, err
-				}
-
-			case item == "a", strings.HasPrefix(item, "a:"), strings.HasPrefix(item, "a/"):
-				if r, ok, err := s.checkMechanismA(item, qResult); ok {
-					return r, true, err
-				}
-
-			case item == "mx", strings.HasPrefix(item, "mx:"), strings.HasPrefix(item, "mx/"):
-				if r, ok, err := s.checkMechanismMX(item, qResult); ok {
-					return r, true, err
-				}
-
-			case item == "ptr", strings.HasPrefix(item, "ptr:"):
-				if r, ok, err := s.checkMechanismPTR(item, qResult); ok {
-					return r, true, err
-				}
+				// else { continue }
 			}
 		}
 
 	}
 
+	// If all mechanisms fail to match, and a "redirect" modifier is present
 	if redirectHost != "" {
-		// "redirect" modifier MUST be ignored
-		// when there is an "all" mechanism in the record,
-		// regardless of the relative ordering of the terms
-		return s.Test(redirectHost)
+		result, err := s.checkHost(redirectHost)
+		// if no SPF record is found, or if the <target-name> is malformed,
+		// the result is a "permerror" rather than "none".
+		if result == ResultNone {
+			return ResultPermError, fmt.Errorf("spf: record not found on redirect host: %s", redirectHost)
+		}
+		return result, err
 	}
-	return ResultNone, true, nil
+	return ResultNone, nil
 }
 
-func (s *Verifier) increaseLookup() error {
-	if s.lookups < defaultMaxLookup {
-		s.lookups++
-		return nil
+// checkMechanism returns (result, matched, error)
+func (s *Verifier) checkMechanism(stmtCS string) (Result, bool, error) {
+	stmt := strings.ToLower(stmtCS) // case-insensitive
+
+	var result Result
+	switch Qualifier(stmt[0]) {
+	case QualifierPass:
+		result = ResultPass
+		stmt = stmt[1:]
+	case QualifierFail:
+		result = ResultFail
+		stmt = stmt[1:]
+	case QualifierSoftFail:
+		result = ResultSoftFail
+		stmt = stmt[1:]
+	case QualifierNeutral:
+		result = ResultNeutral
+		stmt = stmt[1:]
+	default:
+		result = ResultPass
 	}
-	return errors.New("DNS lookup limit exceeded")
+
+	var matched bool
+	var exception *CheckException
+	switch {
+	case stmt == "all":
+		// mechanism "all"
+		// https://datatracker.ietf.org/doc/html/rfc7208#section-5.1
+		return result, true, nil
+	case strings.HasPrefix(stmt, "include:"):
+		matched, exception = s.checkMechanismInclude(stmtCS)
+	case stmt == "a", strings.HasPrefix(stmt, "a:"), strings.HasPrefix(stmt, "a/"):
+		matched, exception = s.checkMechanismA(stmtCS)
+	case stmt == "mx", strings.HasPrefix(stmt, "mx:"), strings.HasPrefix(stmt, "mx/"):
+		matched, exception = s.checkMechanismMX(stmtCS)
+	case stmt == "ptr", strings.HasPrefix(stmt, "ptr:"):
+		matched, exception = s.checkMechanismPTR(stmtCS)
+	case strings.HasPrefix(stmt, "ip4:"), strings.HasPrefix(stmt, "ip6:"):
+		matched, exception = s.checkMechanismIP(stmtCS)
+	case strings.HasPrefix(stmt, "exists:"):
+		matched, exception = s.checkMechanismExists(stmtCS)
+	default:
+		return ResultPermError, false, fmt.Errorf("spf: unknown mechanism: %s", stmtCS)
+	}
+	if exception != nil {
+		return exception.result, false, exception
+	}
+	if matched {
+		return result, true, nil
+	}
+	return "", false, nil
 }
 
-// checkMechanismA processes a mechanism "a"
-// https://datatracker.ietf.org/doc/html/rfc7208#section-5.3
-func (s *Verifier) checkMechanismA(stmt string, r Result) (Result, bool, error) {
+// checkMechanismInclude processes a mechanism "include"
+// https://datatracker.ietf.org/doc/html/rfc7208#section-5.2
+func (s *Verifier) checkMechanismInclude(stmt string) (bool, *CheckException) {
+	host, err := s.expandMacros(stmt[8:])
+	if err != nil {
+		return false, WrapCheckError(err, ResultPermError, "parse domain-spec failed")
+	}
+
+	r, err := s.checkHost(host)
+	switch r {
+	case ResultPass:
+		return true, nil
+	case ResultFail, ResultSoftFail, ResultNeutral:
+		return false, nil
+	case ResultTempError, ResultPermError:
+		return false, WrapCheckError(err, r, "check include host failed")
+	case ResultNone:
+		return false, WrapCheckError(err, ResultPermError, "include host not exists")
+	default: // should not happen
+		return false, NewCheckError(ResultPermError, "unknown check result")
+	}
+}
+
+// checkMechanismA processes a mechanism "a".
+// ref: https://datatracker.ietf.org/doc/html/rfc7208#section-5.3
+func (s *Verifier) checkMechanismA(stmt string) (bool, *CheckException) {
+	// stmt example: a, a:example.com, a/24, a//64, a:example.com/24//64
 	spec := ":" + s.domain
 	if len(stmt) > 1 { // && ( stmt[1] == ':' || stmt[1] == '/' )
 		spec = stmt[1:]
 	}
 	host, v4Prefix, v6Prefix, err := s.parseHostDualCIDR(spec)
 	if err != nil {
-		return ResultPermError, true, fmt.Errorf("parse domain-spec failed(%s): %w", spec, err)
+		return false, WrapCheckError(err, ResultPermError, "parse domain-spec failed")
 	}
 
-	if err := s.increaseLookup(); err != nil {
-		return ResultPermError, true, err
-	}
 	ips, err := s.resolver.LookupIPAddr(s.ctx, host)
 	if err != nil {
-		return ResultTempError, true, err
+		return false, err.(*CheckException)
 	}
 
 	for _, ip := range ips {
-		if s.checkIPDualCIDR(ip.IP, v4Prefix, v6Prefix) {
-			return r, true, nil
+		if s.checkIPDualCIDR(s.ip, ip.IP, v4Prefix, v6Prefix) {
+			return true, nil
 		}
 	}
-	return "", false, nil
+	return false, nil
 }
 
-// resolveMechanismMX processes a mechanism "mx"
-// https://datatracker.ietf.org/doc/html/rfc7208#section-5.4
-func (s *Verifier) checkMechanismMX(stmt string, r Result) (Result, bool, error) {
+// resolveMechanismMX processes a mechanism "mx".
+// ref: https://datatracker.ietf.org/doc/html/rfc7208#section-5.4
+func (s *Verifier) checkMechanismMX(stmt string) (bool, *CheckException) {
+	// stmt example: mx, mx:example.com, mx/24, mx//64, mx:example.com/24//64
 	spec := ":" + s.domain
 	if len(stmt) > 2 { // && ( stmt[2] == ':' || stmt[2] == '/' )
 		spec = stmt[2:]
 	}
 	host, v4Prefix, v6Prefix, err := s.parseHostDualCIDR(spec)
 	if err != nil {
-		return ResultPermError, true, fmt.Errorf("parse domain-spec failed(%s): %w", spec, err)
+		return false, WrapCheckError(err, ResultPermError, "parse domain-spec failed")
 	}
 
-	if err := s.increaseLookup(); err != nil {
-		return ResultPermError, true, err
-	}
 	hosts, err := s.resolver.LookupMX(s.ctx, host)
 	if err != nil {
-		return ResultTempError, false, err
+		return false, err.(*CheckException)
 	}
 
 	for _, mx := range hosts {
-		if err := s.increaseLookup(); err != nil {
-			return ResultPermError, true, err
-		}
+
 		ips, err := s.resolver.LookupIPAddr(s.ctx, mx.Host)
 		if err != nil {
-			return ResultTempError, false, err
+			return false, err.(*CheckException)
 		}
 
 		for _, ip := range ips {
-
-			if s.checkIPDualCIDR(ip.IP, v4Prefix, v6Prefix) {
-				return r, true, nil
+			if s.checkIPDualCIDR(s.ip, ip.IP, v4Prefix, v6Prefix) {
+				return true, nil
 			}
 		}
 	}
-	return "", false, nil
+	return false, nil
 }
 
 var regexpHostDualCIDR = regexp.MustCompile("^(:[^/]+)(/[0-9]+)?(//[0-9]+)?$")
 
 // parseHostDualCIDR
-// for mx:  "mx" [ ":" domain-spec ] [ dual-cidr-length ]
-// for a :  "a"  [ ":" domain-spec ] [ dual-cidr-length ]
+// for mx:  "mx" [ ":" domain-spec ] [ "/" ip4-cidr-length ] [ "//" ip6-cidr-length ]
+// for a :  "a"  [ ":" domain-spec ] [ "/" ip4-cidr-length ] [ "//" ip6-cidr-length ]
 func (s *Verifier) parseHostDualCIDR(stmt string) (host string, v4Prefix int, v6Prefix int, err error) {
 	matches := regexpHostDualCIDR.FindStringSubmatch(stmt)
 	if len(matches) != 4 {
-		return "", 0, 0, errors.New("invalid host (dual-cidr) expr")
+		return "", 0, 0, errors.New("invalid host or dual-cidr expression")
 	}
 
 	host = s.domain
@@ -299,7 +315,7 @@ func (s *Verifier) parseHostDualCIDR(stmt string) (host string, v4Prefix int, v6
 		}
 	}
 
-	v4Prefix = net.IPv4len * 8
+	v4Prefix = net.IPv4len * 8 // default single ip, /32
 	if matches[2] != "" {
 		v4Prefix, err = strconv.Atoi(strings.TrimPrefix(matches[2], "/"))
 		if err != nil || v4Prefix < 0 || v4Prefix > net.IPv4len*8 {
@@ -308,7 +324,7 @@ func (s *Verifier) parseHostDualCIDR(stmt string) (host string, v4Prefix int, v6
 
 	}
 
-	v6Prefix = net.IPv6len * 8
+	v6Prefix = net.IPv6len * 8 // default  single ip, /128
 	if matches[3] != "" {
 		v6Prefix, err = strconv.Atoi(strings.TrimPrefix(matches[3], "//"))
 		if err != nil || v6Prefix < 0 || v6Prefix > net.IPv6len*8 {
@@ -319,92 +335,92 @@ func (s *Verifier) parseHostDualCIDR(stmt string) (host string, v4Prefix int, v6
 	return
 }
 
-func (s *Verifier) checkIPDualCIDR(ip net.IP, v4Prefix int, v6Prefix int) bool {
+func (s *Verifier) checkIPDualCIDR(target, ipNet net.IP, v4Prefix int, v6Prefix int) bool {
 	cidrLen := net.IPv6len * 8
 	cidrPfx := v6Prefix
-	if ip.To4() != nil {
+	if ipNet.To4() != nil {
 		cidrLen = net.IPv4len * 8
 		cidrPfx = v4Prefix
 	}
-	cidrNet := net.IPNet{IP: ip, Mask: net.CIDRMask(cidrLen, cidrPfx)}
-	return cidrNet.Contains(ip)
+	cidrNet := net.IPNet{IP: ipNet, Mask: net.CIDRMask(cidrLen, cidrPfx)}
+	return cidrNet.Contains(target)
 }
 
-// checkMechanismPTR processes a mechanism "ptr"
-// it's not recommend to use (by rfc7208)
-// https://datatracker.ietf.org/doc/html/rfc7208#section-5.5
-func (s *Verifier) checkMechanismPTR(stmt string, r Result) (Result, bool, error) {
+// checkMechanismPTR processes a mechanism "ptr".
+// It's not recommend to use.
+// ref: https://datatracker.ietf.org/doc/html/rfc7208#section-5.5
+func (s *Verifier) checkMechanismPTR(stmt string) (bool, *CheckException) {
+	// stmt example: ptr, ptr:example.com
 	host := s.domain
 	if strings.HasPrefix(stmt, "ptr:") {
 		host = stmt[4:]
 	}
 	host, err := s.expandMacros(host)
 	if err != nil {
-		return ResultPermError, true, err
+		return false, WrapCheckError(err, ResultPermError, "parse domain-spec failed")
 	}
 	if host == "" {
-		return ResultPermError, true, errors.New("invalid host in ptr")
+		return false, NewCheckError(ResultPermError, "invalid empty host in ptr")
 	}
 
-	if err := s.increaseLookup(); err != nil {
-		return ResultPermError, true, err
-	}
 	names, err := s.resolver.LookupAddr(s.ctx, s.ip.String())
 	if err != nil {
-		return ResultTempError, true, err
+		return false, err.(*CheckException)
 	}
 
 	for _, name := range names {
 		name = strings.ToLower(name)
 		if name == host+"." || strings.HasSuffix(name, "."+host+".") {
-			return r, true, nil
+			return true, nil
 		}
 	}
-	return "", false, nil
+	return false, nil
 }
 
-// checkMechanismIP processes a mechanism "ip4" or "ip6"
-// https://datatracker.ietf.org/doc/html/rfc7208#section-5.6
-func (s *Verifier) checkMechanismIP(stmt string, r Result) (Result, bool, error) {
+// checkMechanismIP processes a mechanism "ip4" or "ip6".
+// ref: https://datatracker.ietf.org/doc/html/rfc7208#section-5.6
+func (s *Verifier) checkMechanismIP(stmt string) (bool, *CheckException) {
+	// stmt example: ip4:192.168.0.1, ip6:2001:db8::, ip4:192.168.0.1/24, ip6:2001:db8::/32
 	ipStr := stmt[4:]
 	if strings.ContainsRune(ipStr, '/') {
 		_, ipNet, err := net.ParseCIDR(ipStr)
 		if err != nil {
-			return ResultPermError, true, fmt.Errorf("invalid ipStr address: %s", ipStr)
+			return false, NewCheckError(ResultPermError, "invalid CIDR: "+ipStr)
 		}
 		if ipNet.Contains(s.ip) {
-			return r, true, nil
+			return true, nil
 		}
 	} else {
 		ip := net.ParseIP(ipStr)
 		if ip == nil {
-			return "", false, fmt.Errorf("invalid ipStr address: %s", ipStr)
+			return false, NewCheckError(ResultPermError, "invalid IP: "+ipStr)
 		}
 		if ip.Equal(s.ip) {
-			return r, true, nil
+			return true, nil
 		}
 	}
-	return "", false, nil
+	return false, nil
 }
 
 // checkMechanismExists processes a mechanism "exists"
-// https://datatracker.ietf.org/doc/html/rfc7208#section-5.7
-func (s *Verifier) checkMechanismExists(stmt string, r Result) (Result, bool, error) {
+// ref: https://datatracker.ietf.org/doc/html/rfc7208#section-5.7
+func (s *Verifier) checkMechanismExists(stmt string) (bool, *CheckException) {
+	// stmt example: "exists:example.com", "exists:%{ir}.%{l1r+}.%{d}"
 	spec := stmt[7:]
 	host, err := s.expandMacros(spec)
 	if err != nil {
-		return ResultPermError, true, err
+		return false, WrapCheckError(err, ResultPermError, "parse domain-spec failed")
 	}
 	// domain is used for a DNS A RR lookup
-	// even when the connection type is IPv6
+	// (even when the connection type is IPv6)
 	ips, err := s.resolver.LookupIP(s.ctx, "ip4", host)
 	if err != nil {
-		return ResultTempError, true, err
+		return false, err.(*CheckException)
 	}
 	if len(ips) > 0 {
-		return r, true, nil
+		return true, nil
 	}
-	return "", false, nil
+	return false, nil
 }
 
 // expandMacros expand domain-spec to hostname
@@ -429,7 +445,7 @@ func (s *Verifier) expandMacros(stmt string) (string, error) {
 				inMacro = true
 				macroName = ""
 			default:
-				return "", errors.New("invalid macro expr")
+				return "", errors.New("invalid macro expression")
 			}
 			afterPercent = false
 		} else if inMacro {
@@ -440,7 +456,7 @@ func (s *Verifier) expandMacros(stmt string) (string, error) {
 			inMacro = false
 			var macroVal string
 			if macroVal, err = s.getMacroValue(macroName); err != nil {
-				return "", fmt.Errorf("get macro %s failed: %w", macroName, err)
+				return "", fmt.Errorf("get value for macro %s failed: %w", macroName, err)
 			}
 			sb.WriteString(macroVal)
 		} else if c == '%' {
@@ -450,7 +466,7 @@ func (s *Verifier) expandMacros(stmt string) (string, error) {
 		}
 	}
 	if inMacro || afterPercent {
-		return "", errors.New("invalid macro expr")
+		return "", errors.New("invalid macro expression")
 	}
 	return sb.String(), nil
 
@@ -473,7 +489,7 @@ func (s *Verifier) getMacroValue(name string) (rs string, err error) {
 	case 'o', 'd':
 		rs = s.domain
 	case 'i':
-		rs = formatIPDotRepr(s.ip)
+		rs = formatIPDotNotation(s.ip)
 	case 'p':
 		// do not use, always return safe value
 		// https://datatracker.ietf.org/doc/html/rfc7208#section-7.3
@@ -541,7 +557,7 @@ func reverseStringSlice(s []string) {
 	}
 }
 
-func formatIPDotRepr(ip net.IP) string {
+func formatIPDotNotation(ip net.IP) string {
 	if ip.To4() != nil {
 		return ip.String()
 	}
