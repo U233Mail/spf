@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Qualifier for SPF DNS record's directive https://datatracker.ietf.org/doc/html/rfc7208#section-4.6.2
@@ -63,6 +64,7 @@ func NewVerifier(sender string, ip net.IP, helloDomain string) *Verifier {
 		ip:          ip,
 		helloDomain: helloDomain,
 		ctx:         context.TODO(),
+		timeout:     defaultSPFTimeout,
 		lookups:     0,
 	}
 	s.SetResolver(net.DefaultResolver)
@@ -77,6 +79,7 @@ type Verifier struct {
 	helloDomain string
 
 	resolver *LimitResolver
+	timeout  time.Duration
 	ctx      context.Context
 
 	lookups int // DNS lookup times
@@ -91,11 +94,16 @@ func (s *Verifier) SetResolver(resolver DNSResolver) {
 	}
 }
 
-func (s *Verifier) Test() (Result, error) {
-	// todo: add timeout to context
-	//   MTAs or other processors SHOULD impose a limit on the maximum amount of elapsed time to evaluate check_host().
-	//   Such a limit SHOULD allow at least 20 seconds.
-	//   If such a limit is exceeded, the result of authorization SHOULD be "temperror".
+const defaultSPFTimeout = time.Second * 20
+
+func (s *Verifier) SetTimeout(t time.Duration) {
+	s.timeout = t
+}
+
+func (s *Verifier) Test(ctx context.Context) (Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	s.ctx = ctx
+	defer cancel()
 	return s.checkHost(s.domain)
 }
 
