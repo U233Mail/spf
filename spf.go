@@ -106,7 +106,7 @@ func (s *Verifier) checkHost(domain string) (Result, error) {
 		return ResultTempError, err
 	}
 
-	var redirectHost, explanationHost string
+	var redirectHost string
 
 	for _, txt := range records {
 		if !strings.HasPrefix(txt, "v=spf1 ") {
@@ -125,23 +125,12 @@ func (s *Verifier) checkHost(domain string) (Result, error) {
 			case strings.HasPrefix(item, "exp="):
 				// modifier "exp" (explanation)
 				// https://datatracker.ietf.org/doc/html/rfc7208#section-6.2
-				explanationHost, err = s.expandMacros(item[8:])
-				if err != nil {
-					return ResultPermError, fmt.Errorf("spf: expand macros for %s failed: %w", item[8:], err)
-				}
-
+				continue // ignore, we are not supporting it for now
 			default:
 				result, matched, err := s.checkMechanism(item)
-				if err != nil {
+				if err != nil || matched {
 					return result, err
-				} else if matched {
-					if result == ResultFail && explanationHost != "" {
-						// expItems, err := s.resolver.LookupTXT(s.ctx, explanationHost)
-						// todo: implement
-					}
-					return result, err
-				}
-				// else { continue }
+				} // else { continue }
 			}
 		}
 
@@ -503,16 +492,6 @@ func (s *Verifier) getMacroValue(name string) (rs string, err error) {
 	case 'h':
 		rs = s.helloDomain
 
-	// 'c', 'r', 't' allowed in 'exp' only
-	// for now we don't support 'exp'
-	/*
-		case 'c':
-				rs = s.ip.String()
-		case 'r':
-			rs = config.Config.Domain
-		case 't':
-			rs = strconv.FormatInt(time.Now().Unix(), 10)
-	*/
 	default:
 		return "", errInvalidMacro
 	}
