@@ -1,3 +1,3 @@
-module go.u233.cn/spf
+module go.u233.dev/spf
 
 go 1.17
