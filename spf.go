@@ -293,11 +293,10 @@ func (s *Verifier) checkMechanismMX(stmt string) (bool, *CheckError) {
 	return false, nil
 }
 
-var regexpHostDualCIDR = regexp.MustCompile("^(:[^/]+)(/[0-9]+)?(//[0-9]+)?$")
+var regexpHostDualCIDR = regexp.MustCompile("^(:[^/]+)?(/[0-9]+)?(//[0-9]+)?$")
 
-// parseHostDualCIDR
-// for mx:  "mx" [ ":" domain-spec ] [ "/" ip4-cidr-length ] [ "//" ip6-cidr-length ]
-// for a :  "a"  [ ":" domain-spec ] [ "/" ip4-cidr-length ] [ "//" ip6-cidr-length ]
+// parseHostDualCIDR for "a", "mx"
+// spec: [ ":" domain-spec ] [ "/" ip4-cidr-length ] [ "//" ip6-cidr-length ]
 func (s *Verifier) parseHostDualCIDR(stmt string) (host string, v4Prefix int, v6Prefix int, err error) {
 	matches := regexpHostDualCIDR.FindStringSubmatch(stmt)
 	if len(matches) != 4 {
@@ -339,7 +338,7 @@ func (s *Verifier) checkIPDualCIDR(target, ipNet net.IP, v4Prefix int, v6Prefix 
 		cidrLen = net.IPv4len * 8
 		cidrPfx = v4Prefix
 	}
-	cidrNet := net.IPNet{IP: ipNet, Mask: net.CIDRMask(cidrLen, cidrPfx)}
+	cidrNet := net.IPNet{IP: ipNet, Mask: net.CIDRMask(cidrPfx, cidrLen)}
 	return cidrNet.Contains(target)
 }
 

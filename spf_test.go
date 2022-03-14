@@ -4,6 +4,8 @@ import (
 	"net"
 	"reflect"
 	"testing"
+
+	"github.com/foxcpp/go-mockdns"
 )
 
 func Test_reverseStringSlice(t *testing.T) {
@@ -142,6 +144,58 @@ func TestVerifier_expandMacros(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Errorf("expandMacros() got = %v, want %v", got, tt.want)
+			}
+		})
+	}
+
+}
+
+func TestVerifier_checkMechanismMX(t *testing.T) {
+	resolver := &mockdns.Resolver{Zones: map[string]mockdns.Zone{
+		"example.com.": {
+			MX: []net.MX{{Host: "mx.example.com", Pref: 5}},
+		},
+		"mail.example.com.": {
+			MX: []net.MX{{Host: "mx.example.com", Pref: 5}},
+		},
+
+		"mx.example.com.": {
+			A:    []string{"10.10.10.10"},
+			AAAA: []string{"2001:db8::1"},
+		},
+	}}
+	cases := []struct {
+		stmt        string
+		sender      string
+		ip          string
+		helloDomain string
+		want        bool
+		wantErr     bool
+	}{
+		{"mx", "test@example.com", "10.10.10.10", "example.net", true, false},
+		{"mx/24", "test@example.com", "10.10.10.254", "example.net", true, false},
+		{"mx:mail.example.com", "test@example.com", "10.10.10.10", "example.net", true, false},
+		{"mx:mail.example.com/24", "test@example.com", "10.10.10.254", "example.net", true, false},
+
+		{"mx", "test@example.com", "2001:db8::1", "example.net", true, false},
+		{"mx//64", "test@example.com", "2001:0db8::ffff:0:0:1", "example.net", true, false},
+		{"mx:mail.example.com//64", "test@example.com", "2001:0db8::ffff:0:0:1", "example.net", true, false},
+		{"mx:mail.example.com/24//64", "test@example.com", "10.10.10.254", "example.net", true, false},
+		{"mx:mail.example.com/24//64", "test@example.com", "2001:0db8::ffff:0:0:1", "example.net", true, false},
+
+		{"mx", "test@example.com", "192.168.1.1", "example.net", false, false},
+		{"mx:non-exist.example.com", "test@example.com", "10.10.10.10", "example.net", false, true},
+	}
+	for _, tt := range cases {
+		t.Run(tt.stmt, func(t *testing.T) {
+			s := NewVerifier(tt.sender, net.ParseIP(tt.ip), tt.helloDomain)
+			s.SetResolver(resolver)
+			matched, err := s.checkMechanismMX(tt.stmt)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("checkMechanismMX() err = %v, want = %v", err, tt.wantErr)
+			}
+			if matched != tt.want {
+				t.Errorf("checkMechanismMX() matched = %v, want = %v", matched, tt.want)
 			}
 		})
 	}
