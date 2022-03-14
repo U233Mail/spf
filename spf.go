@@ -180,7 +180,7 @@ func (s *Verifier) checkMechanism(stmtCS string) (Result, bool, error) {
 	}
 
 	var matched bool
-	var exception *CheckException
+	var exception *CheckError
 	switch {
 	case stmt == "all":
 		// mechanism "all"
@@ -212,7 +212,7 @@ func (s *Verifier) checkMechanism(stmtCS string) (Result, bool, error) {
 
 // checkMechanismInclude processes a mechanism "include"
 // https://datatracker.ietf.org/doc/html/rfc7208#section-5.2
-func (s *Verifier) checkMechanismInclude(stmt string) (bool, *CheckException) {
+func (s *Verifier) checkMechanismInclude(stmt string) (bool, *CheckError) {
 	host, err := s.expandMacros(stmt[8:])
 	if err != nil {
 		return false, WrapCheckError(err, ResultPermError, "parse domain-spec failed")
@@ -235,7 +235,7 @@ func (s *Verifier) checkMechanismInclude(stmt string) (bool, *CheckException) {
 
 // checkMechanismA processes a mechanism "a".
 // ref: https://datatracker.ietf.org/doc/html/rfc7208#section-5.3
-func (s *Verifier) checkMechanismA(stmt string) (bool, *CheckException) {
+func (s *Verifier) checkMechanismA(stmt string) (bool, *CheckError) {
 	// stmt example: a, a:example.com, a/24, a//64, a:example.com/24//64
 	spec := ":" + s.domain
 	if len(stmt) > 1 { // && ( stmt[1] == ':' || stmt[1] == '/' )
@@ -248,7 +248,7 @@ func (s *Verifier) checkMechanismA(stmt string) (bool, *CheckException) {
 
 	ips, err := s.resolver.LookupIP(s.ctx, "ip", host)
 	if err != nil {
-		return false, err.(*CheckException)
+		return false, err.(*CheckError)
 	}
 
 	for _, ipNet := range ips {
@@ -261,7 +261,7 @@ func (s *Verifier) checkMechanismA(stmt string) (bool, *CheckException) {
 
 // resolveMechanismMX processes a mechanism "mx".
 // ref: https://datatracker.ietf.org/doc/html/rfc7208#section-5.4
-func (s *Verifier) checkMechanismMX(stmt string) (bool, *CheckException) {
+func (s *Verifier) checkMechanismMX(stmt string) (bool, *CheckError) {
 	// stmt example: mx, mx:example.com, mx/24, mx//64, mx:example.com/24//64
 	spec := ":" + s.domain
 	if len(stmt) > 2 { // && ( stmt[2] == ':' || stmt[2] == '/' )
@@ -274,14 +274,14 @@ func (s *Verifier) checkMechanismMX(stmt string) (bool, *CheckException) {
 
 	hosts, err := s.resolver.LookupMX(s.ctx, host)
 	if err != nil {
-		return false, err.(*CheckException)
+		return false, err.(*CheckError)
 	}
 
 	for _, mx := range hosts {
 
 		ips, err := s.resolver.LookupIP(s.ctx, "ip", mx.Host)
 		if err != nil {
-			return false, err.(*CheckException)
+			return false, err.(*CheckError)
 		}
 
 		for _, ipNet := range ips {
@@ -346,7 +346,7 @@ func (s *Verifier) checkIPDualCIDR(target, ipNet net.IP, v4Prefix int, v6Prefix 
 // checkMechanismPTR processes a mechanism "ptr".
 // It's not recommend to use.
 // ref: https://datatracker.ietf.org/doc/html/rfc7208#section-5.5
-func (s *Verifier) checkMechanismPTR(stmt string) (bool, *CheckException) {
+func (s *Verifier) checkMechanismPTR(stmt string) (bool, *CheckError) {
 	// stmt example: ptr, ptr:example.com
 	host := s.domain
 	if strings.HasPrefix(stmt, "ptr:") {
@@ -362,7 +362,7 @@ func (s *Verifier) checkMechanismPTR(stmt string) (bool, *CheckException) {
 
 	names, err := s.resolver.LookupAddr(s.ctx, s.ip.String())
 	if err != nil {
-		return false, err.(*CheckException)
+		return false, err.(*CheckError)
 	}
 
 	for _, name := range names {
@@ -376,7 +376,7 @@ func (s *Verifier) checkMechanismPTR(stmt string) (bool, *CheckException) {
 
 // checkMechanismIP processes a mechanism "ip4" or "ip6".
 // ref: https://datatracker.ietf.org/doc/html/rfc7208#section-5.6
-func (s *Verifier) checkMechanismIP(stmt string) (bool, *CheckException) {
+func (s *Verifier) checkMechanismIP(stmt string) (bool, *CheckError) {
 	// stmt example: ip4:192.168.0.1, ip6:2001:db8::, ip4:192.168.0.1/24, ip6:2001:db8::/32
 	ipStr := stmt[4:]
 	if strings.ContainsRune(ipStr, '/') {
@@ -401,7 +401,7 @@ func (s *Verifier) checkMechanismIP(stmt string) (bool, *CheckException) {
 
 // checkMechanismExists processes a mechanism "exists"
 // ref: https://datatracker.ietf.org/doc/html/rfc7208#section-5.7
-func (s *Verifier) checkMechanismExists(stmt string) (bool, *CheckException) {
+func (s *Verifier) checkMechanismExists(stmt string) (bool, *CheckError) {
 	// stmt example: "exists:example.com", "exists:%{ir}.%{l1r+}.%{d}"
 	spec := stmt[7:]
 	host, err := s.expandMacros(spec)
@@ -412,7 +412,7 @@ func (s *Verifier) checkMechanismExists(stmt string) (bool, *CheckException) {
 	// (even when the connection type is IPv6)
 	ips, err := s.resolver.LookupIP(s.ctx, "ip4", host)
 	if err != nil {
-		return false, err.(*CheckException)
+		return false, err.(*CheckError)
 	}
 	if len(ips) > 0 {
 		return true, nil

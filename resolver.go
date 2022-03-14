@@ -51,8 +51,8 @@ func (r *LimitResolver) wrapError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if _, ok := err.(*CheckException); ok {
-		return err.(*CheckException)
+	if _, ok := err.(*CheckError); ok {
+		return err.(*CheckError)
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return limitExceededDeadline
