@@ -246,13 +246,13 @@ func (s *Verifier) checkMechanismA(stmt string) (bool, *CheckException) {
 		return false, WrapCheckError(err, ResultPermError, "parse domain-spec failed")
 	}
 
-	ips, err := s.resolver.LookupIPAddr(s.ctx, host)
+	ips, err := s.resolver.LookupIP(s.ctx, "ip", host)
 	if err != nil {
 		return false, err.(*CheckException)
 	}
 
-	for _, ip := range ips {
-		if s.checkIPDualCIDR(s.ip, ip.IP, v4Prefix, v6Prefix) {
+	for _, ipNet := range ips {
+		if s.checkIPDualCIDR(s.ip, ipNet, v4Prefix, v6Prefix) {
 			return true, nil
 		}
 	}
@@ -279,13 +279,13 @@ func (s *Verifier) checkMechanismMX(stmt string) (bool, *CheckException) {
 
 	for _, mx := range hosts {
 
-		ips, err := s.resolver.LookupIPAddr(s.ctx, mx.Host)
+		ips, err := s.resolver.LookupIP(s.ctx, "ip", mx.Host)
 		if err != nil {
 			return false, err.(*CheckException)
 		}
 
-		for _, ip := range ips {
-			if s.checkIPDualCIDR(s.ip, ip.IP, v4Prefix, v6Prefix) {
+		for _, ipNet := range ips {
+			if s.checkIPDualCIDR(s.ip, ipNet, v4Prefix, v6Prefix) {
 				return true, nil
 			}
 		}

@@ -8,10 +8,19 @@ import (
 )
 
 type DNSResolver interface {
+	// LookupTXT returns all TXT records for the given domain.
 	LookupTXT(ctx context.Context, name string) ([]string, error)
-	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
+
+	// LookupIP returns all IP addresses of the given host.
+	// If network is "ip", IPv6 and IPv4 addresses are returned.
+	// If network is "ip4", only IPv4 addresses are returned.
+	// If network is "ip6", only IPv6 addresses are returned.
 	LookupIP(ctx context.Context, network, host string) ([]net.IP, error)
+
+	// LookupMX returns all MX records (host and priority) for a domain.
 	LookupMX(ctx context.Context, name string) ([]*net.MX, error)
+
+	// LookupAddr returns the PTR records (domain) for an IP address.
 	LookupAddr(ctx context.Context, addr string) ([]string, error)
 }
 
@@ -38,7 +47,7 @@ func (r *LimitResolver) increaseLookup() error {
 	}
 	return nil
 }
-func (r *LimitResolver) wrapError(err error) *CheckException {
+func (r *LimitResolver) wrapError(err error) error {
 	if err == nil {
 		return nil
 	}
@@ -55,14 +64,6 @@ func (r *LimitResolver) LookupTXT(ctx context.Context, name string) ([]string, e
 		return nil, err
 	}
 	rs, err := r.resolver.LookupTXT(ctx, name)
-	return rs, r.wrapError(err)
-}
-
-func (r *LimitResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
-	if err := r.increaseLookup(); err != nil {
-		return nil, err
-	}
-	rs, err := r.resolver.LookupIPAddr(ctx, host)
 	return rs, r.wrapError(err)
 }
 
