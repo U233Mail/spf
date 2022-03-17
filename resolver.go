@@ -47,6 +47,7 @@ func (r *LimitResolver) increaseLookup() error {
 	}
 	return nil
 }
+
 func (r *LimitResolver) wrapError(err error) error {
 	if err == nil {
 		return nil
@@ -56,6 +57,15 @@ func (r *LimitResolver) wrapError(err error) error {
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return limitExceededDeadline
+	}
+	if errors.Is(err, &net.DNSError{}) {
+		err2 := err.(*net.DNSError)
+		if err2.Temporary() {
+			return NewCheckError(ResultTempError, "dns: "+err2.Error())
+		}
+		if err2.IsNotFound {
+			return NewCheckError(ResultNone, "dns: "+err2.Error())
+		}
 	}
 	return WrapCheckError(err, ResultPermError, "dns: unexpected error")
 }
