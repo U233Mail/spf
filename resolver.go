@@ -40,8 +40,8 @@ type LimitResolver struct {
 var limitExceededAmount = NewCheckError(ResultPermError, "dns: query limit exceeded (amount)")
 var limitExceededDeadline = NewCheckError(ResultTempError, "dns: query limit exceeded (deadline)")
 
-func (r *LimitResolver) increaseLookup() error {
-	now := atomic.AddInt32(&r.Limit, -1)
+func (r *LimitResolver) increaseLookup(times int32) error {
+	now := atomic.AddInt32(&r.Limit, -times)
 	if now < 0 {
 		return limitExceededAmount
 	}
@@ -70,7 +70,7 @@ func (r *LimitResolver) wrapError(err error) error {
 	return WrapCheckError(err, ResultPermError, "dns: unexpected error")
 }
 func (r *LimitResolver) LookupTXT(ctx context.Context, name string) ([]string, error) {
-	if err := r.increaseLookup(); err != nil {
+	if err := r.increaseLookup(1); err != nil {
 		return nil, err
 	}
 	rs, err := r.resolver.LookupTXT(ctx, name)
@@ -78,7 +78,11 @@ func (r *LimitResolver) LookupTXT(ctx context.Context, name string) ([]string, e
 }
 
 func (r *LimitResolver) LookupIP(ctx context.Context, network, host string) ([]net.IP, error) {
-	if err := r.increaseLookup(); err != nil {
+	lookupTimes := int32(1)
+	if network == "ip" { // "ip" means both IPv4(A) and IPv6(AAAA)
+		lookupTimes = 2
+	}
+	if err := r.increaseLookup(lookupTimes); err != nil {
 		return nil, err
 	}
 	rs, err := r.resolver.LookupIP(ctx, network, host)
@@ -86,7 +90,7 @@ func (r *LimitResolver) LookupIP(ctx context.Context, network, host string) ([]n
 }
 
 func (r *LimitResolver) LookupMX(ctx context.Context, name string) ([]*net.MX, error) {
-	if err := r.increaseLookup(); err != nil {
+	if err := r.increaseLookup(1); err != nil {
 		return nil, err
 	}
 	rs, err := r.resolver.LookupMX(ctx, name)
@@ -94,7 +98,7 @@ func (r *LimitResolver) LookupMX(ctx context.Context, name string) ([]*net.MX, e
 }
 
 func (r *LimitResolver) LookupAddr(ctx context.Context, addr string) ([]string, error) {
-	if err := r.increaseLookup(); err != nil {
+	if err := r.increaseLookup(1); err != nil {
 		return nil, err
 	}
 	rs, err := r.resolver.LookupAddr(ctx, addr)
