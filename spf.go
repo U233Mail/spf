@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/miekg/dns"
 )
 
 // Qualifier for SPF DNS record's directive https://datatracker.ietf.org/doc/html/rfc7208#section-4.6.2
@@ -101,6 +103,13 @@ func (s *Verifier) SetTimeout(t time.Duration) {
 }
 
 func (s *Verifier) Test(ctx context.Context) (Result, error) {
+	// for now, we support SMTP HELO with domain only
+	// todo: support SMTP HELO with address-literal
+	// ref: https://www.rfc-editor.org/rfc/rfc5321#section-4.1.1.1
+	if _, ok := dns.IsDomainName(s.helloDomain); !ok {
+		return ResultFail, errors.New("hello domain is not a domain")
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	s.ctx = ctx
 	defer cancel()
@@ -111,7 +120,8 @@ func (s *Verifier) Test(ctx context.Context) (Result, error) {
 func (s *Verifier) checkHost(domain string) (Result, error) {
 	records, err := s.resolver.LookupTXT(s.ctx, domain)
 	if err != nil {
-		return ResultTempError, err
+		err2 := err.(*CheckError)
+		return err2.result, err
 	}
 
 	var redirectHost string

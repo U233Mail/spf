@@ -183,6 +183,8 @@ func TestVerifier_Test(t *testing.T) {
 						if err != nil {
 							t.Log(err)
 						}
+						t.Logf("spec: %s, %s ", tt.Spec, tt.Description)
+						t.Log(tt.Comment)
 					}
 				})
 			}
