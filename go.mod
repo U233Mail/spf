@@ -1,14 +1,12 @@
 module go.u233.dev/spf
 
-go 1.18
+go 1.17
 
 require (
-	github.com/foxcpp/go-mockdns v1.0.0
+	github.com/foxcpp/go-mockdns v1.0.1-0.20220314080131-04b41691ab5f
 	github.com/miekg/dns v1.1.48
 	gopkg.in/yaml.v2 v2.4.0
 )
-
-replace github.com/foxcpp/go-mockdns v1.0.0 => github.com/ix64/go-mockdns v1.0.1-0.20220314014435-834a4d678d6c
 
 require (
 	golang.org/x/mod v0.6.0-dev.0.20220106191415-9b9b3d81d5e3 // indirect
