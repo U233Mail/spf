@@ -192,3 +192,114 @@ func TestVerifier_Test(t *testing.T) {
 
 	}
 }
+
+func loadMockResolver(zf string) (*mockdns.Resolver, error) {
+	zr, err := os.Open(zf)
+	if err != nil {
+		return nil, err
+	}
+
+	zones := map[string]mockdns.Zone{}
+	zp := dns.NewZoneParser(zr, "", "")
+	zp.SetDefaultTTL(300)
+
+	for rr, ok := zp.Next(); ok; rr, ok = zp.Next() {
+		hdr := rr.Header()
+		zone, ok := zones[hdr.Name]
+		if !ok {
+			zone = mockdns.Zone{}
+		}
+
+		switch hdr.Rrtype {
+		case dns.TypeA:
+			rrA := rr.(*dns.A)
+			zone.A = append(zone.A, rrA.A.String())
+		case dns.TypeAAAA:
+			rrAAAA := rr.(*dns.AAAA)
+			zone.AAAA = append(zone.AAAA, rrAAAA.AAAA.String())
+		case dns.TypeMX:
+			rrMX := rr.(*dns.MX)
+			zone.MX = append(zone.MX, net.MX{Host: rrMX.Mx, Pref: rrMX.Preference})
+		case dns.TypeCNAME:
+			rrCNAME := rr.(*dns.CNAME)
+			zone.CNAME = rrCNAME.Target
+		case dns.TypePTR:
+			rrPTR := rr.(*dns.PTR)
+			zone.PTR = append(zone.PTR, rrPTR.Ptr)
+		default:
+			return nil, fmt.Errorf("unexpected TYPE: %s", rr.String())
+		}
+
+		zones[hdr.Name] = zone
+	}
+
+	if err := zp.Err(); err != nil {
+		return nil, err
+	}
+	return &mockdns.Resolver{Zones: zones}, nil
+}
+
+func addMockSPFRecord(resolver *mockdns.Resolver, domain, record string) {
+	domain = dns.Fqdn(domain)
+	zone, ok := resolver.Zones[domain]
+	if !ok {
+		zone = mockdns.Zone{}
+	}
+	zone.TXT = append(zone.TXT, record)
+	resolver.Zones[domain] = zone
+}
+
+func TestVerifier_RFC7208Appendix1(t *testing.T) {
+
+	var cases = []struct {
+		spf  string //published records for example.com
+		ip   string // <ip> would cause check_host() to return "pass"
+		want Result
+	}{
+		{"v=spf1 +all", "10.0.0.1", ResultPass},
+
+		{"v=spf1 a -all", "192.0.2.10", ResultPass},
+		{"v=spf1 a -all", "192.0.2.11", ResultPass},
+
+		{"v=spf1 a:example.org -all", "192.0.2.11", ResultPermError},
+
+		{"v=spf1 mx -all", "192.0.2.129", ResultPass},
+		{"v=spf1 mx -all", "192.0.2.130", ResultPass},
+
+		{"v=spf1 mx:example.org -all", "192.0.2.140", ResultPass},
+
+		{"v=spf1 mx mx:example.org -all", "192.0.2.129", ResultPass},
+		{"v=spf1 mx mx:example.org -all", "192.0.2.130", ResultPass},
+		{"v=spf1 mx mx:example.org -all", "192.0.2.140", ResultPass},
+
+		{"v=spf1 mx/30 mx:example.org/30 -all", "192.0.2.128", ResultPass},
+		{"v=spf1 mx/30 mx:example.org/30 -all", "192.0.2.131", ResultPass},
+		{"v=spf1 mx/30 mx:example.org/30 -all", "192.0.2.141", ResultPass},
+		{"v=spf1 mx/30 mx:example.org/30 -all", "192.0.2.143", ResultPass},
+
+		{"v=spf1 ptr -all", "192.0.2.65", ResultPass},
+		{"v=spf1 ptr -all", "192.0.2.140", ResultFail},
+		{"v=spf1 ptr -all", "10.0.0.4", ResultFail},
+
+		{"v=spf1 ip4:192.0.2.128/28 -all", "192.0.2.65", ResultFail},
+		{"v=spf1 ip4:192.0.2.128/28 -all", "192.0.2.129", ResultPass},
+	}
+	for _, s := range cases {
+		t.Run(s.spf, func(t *testing.T) {
+			resolver, err := loadMockResolver("./testdata/rfc7208-appendix-a1.zone")
+			if err != nil {
+				t.Error(err)
+			}
+			addMockSPFRecord(resolver, "example.com", s.spf)
+
+			v := NewVerifier("test@example.com", net.ParseIP(s.ip), "example.net")
+			v.SetResolver(resolver)
+
+			got, err := v.Test(context.TODO())
+			if got != s.want {
+				t.Errorf("incorrect result, want=%s, got=%s", s.want, got)
+				t.Error(err)
+			}
+		})
+	}
+}

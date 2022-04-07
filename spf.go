@@ -375,10 +375,22 @@ func (s *Verifier) checkMechanismPTR(stmt string) (bool, *CheckError) {
 	}
 
 	for _, name := range names {
-		name = strings.ToLower(name)
-		if name == host+"." || strings.HasSuffix(name, "."+host+".") {
-			return true, nil
+		if !dns.IsSubDomain(dns.Fqdn(host), name) {
+			continue
 		}
+
+		//todo: use netip.Addr and sepcify "ip4" or "ip6"
+		ips, err := s.resolver.LookupIP(s.ctx, "ip", name)
+		if err != nil {
+			return false, err.(*CheckError)
+		}
+
+		for _, ip := range ips {
+			if s.ip.Equal(ip) {
+				return true, nil
+			}
+		}
+
 	}
 	return false, nil
 }
