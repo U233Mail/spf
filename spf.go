@@ -62,7 +62,7 @@ func NewVerifier(sender string, ip net.IP, helloDomain string) *Verifier {
 	atIdx := strings.LastIndexByte(sender, '@')
 	s := &Verifier{
 		sender:      sender,
-		domain:      sender[atIdx+1:],
+		localPart:   sender[atIdx+1:],
 		ip:          ip,
 		helloDomain: helloDomain,
 		ctx:         context.TODO(),
@@ -76,13 +76,14 @@ func NewVerifier(sender string, ip net.IP, helloDomain string) *Verifier {
 // Verifier for SPF Version 1
 type Verifier struct {
 	sender      string
-	domain      string // extracted from sender
+	localPart   string // extracted from sender
 	ip          net.IP
 	helloDomain string
 
-	resolver *LimitResolver
-	timeout  time.Duration
-	ctx      context.Context
+	resolver    *LimitResolver
+	timeout     time.Duration
+	ctx         context.Context
+	checkDomain string
 
 	lookups int // DNS lookup times
 }
@@ -113,12 +114,13 @@ func (s *Verifier) Test(ctx context.Context) (Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	s.ctx = ctx
 	defer cancel()
-	return s.checkHost(s.domain)
+	return s.checkHost(s.localPart)
 }
 
 // checkHost checks the SPF record on the given domain
 func (s *Verifier) checkHost(domain string) (Result, error) {
-	records, err := s.resolver.LookupTXT(s.ctx, domain)
+	s.checkDomain = domain
+	records, err := s.resolver.LookupTXT(s.ctx, s.checkDomain)
 	if err != nil {
 		err2 := err.(*CheckError)
 		return err2.result, err
@@ -136,7 +138,7 @@ func (s *Verifier) checkHost(domain string) (Result, error) {
 			case strings.HasPrefix(item, "redirect="):
 				// modifier "redirect"
 				// https://datatracker.ietf.org/doc/html/rfc7208#section-6.1
-				redirectHost, err = s.expandMacros(item[8:])
+				redirectHost, err = s.expandMacros(item[9:])
 				if err != nil {
 					return ResultPermError, fmt.Errorf("spf: expand macros for %s failed: %w", item[8:], err)
 				}
@@ -190,29 +192,29 @@ func (s *Verifier) checkMechanism(stmtCS string) (Result, bool, error) {
 	}
 
 	var matched bool
-	var exception *CheckError
+	var err *CheckError
 	switch {
 	case stmt == "all":
 		// mechanism "all"
 		// https://datatracker.ietf.org/doc/html/rfc7208#section-5.1
 		return result, true, nil
 	case strings.HasPrefix(stmt, "include:"):
-		matched, exception = s.checkMechanismInclude(stmtCS)
+		matched, err = s.checkMechanismInclude(stmtCS)
 	case stmt == "a", strings.HasPrefix(stmt, "a:"), strings.HasPrefix(stmt, "a/"):
-		matched, exception = s.checkMechanismA(stmtCS)
+		matched, err = s.checkMechanismA(stmtCS)
 	case stmt == "mx", strings.HasPrefix(stmt, "mx:"), strings.HasPrefix(stmt, "mx/"):
-		matched, exception = s.checkMechanismMX(stmtCS)
+		matched, err = s.checkMechanismMX(stmtCS)
 	case stmt == "ptr", strings.HasPrefix(stmt, "ptr:"):
-		matched, exception = s.checkMechanismPTR(stmtCS)
+		matched, err = s.checkMechanismPTR(stmtCS)
 	case strings.HasPrefix(stmt, "ip4:"), strings.HasPrefix(stmt, "ip6:"):
-		matched, exception = s.checkMechanismIP(stmtCS)
+		matched, err = s.checkMechanismIP(stmtCS)
 	case strings.HasPrefix(stmt, "exists:"):
-		matched, exception = s.checkMechanismExists(stmtCS)
+		matched, err = s.checkMechanismExists(stmtCS)
 	default:
 		return ResultPermError, false, fmt.Errorf("spf: unknown mechanism: %s", stmtCS)
 	}
-	if exception != nil {
-		return exception.result, false, exception
+	if err != nil {
+		return err.result, false, err
 	}
 	if matched {
 		return result, true, nil
@@ -247,7 +249,7 @@ func (s *Verifier) checkMechanismInclude(stmt string) (bool, *CheckError) {
 // ref: https://datatracker.ietf.org/doc/html/rfc7208#section-5.3
 func (s *Verifier) checkMechanismA(stmt string) (bool, *CheckError) {
 	// stmt example: a, a:example.com, a/24, a//64, a:example.com/24//64
-	spec := ":" + s.domain
+	spec := ":" + s.checkDomain
 	if len(stmt) > 1 { // && ( stmt[1] == ':' || stmt[1] == '/' )
 		spec = stmt[1:]
 	}
@@ -273,7 +275,7 @@ func (s *Verifier) checkMechanismA(stmt string) (bool, *CheckError) {
 // ref: https://datatracker.ietf.org/doc/html/rfc7208#section-5.4
 func (s *Verifier) checkMechanismMX(stmt string) (bool, *CheckError) {
 	// stmt example: mx, mx:example.com, mx/24, mx//64, mx:example.com/24//64
-	spec := ":" + s.domain
+	spec := ":" + s.checkDomain
 	if len(stmt) > 2 { // && ( stmt[2] == ':' || stmt[2] == '/' )
 		spec = stmt[2:]
 	}
@@ -313,7 +315,7 @@ func (s *Verifier) parseHostDualCIDR(stmt string) (host string, v4Prefix int, v6
 		return "", 0, 0, errors.New("invalid host or dual-cidr expression")
 	}
 
-	host = s.domain
+	host = s.localPart
 	if matches[1] != "" {
 		host, err = s.expandMacros(matches[1][1:])
 		if err != nil {
@@ -357,7 +359,7 @@ func (s *Verifier) checkIPDualCIDR(target, ipNet net.IP, v4Prefix int, v6Prefix 
 // ref: https://datatracker.ietf.org/doc/html/rfc7208#section-5.5
 func (s *Verifier) checkMechanismPTR(stmt string) (bool, *CheckError) {
 	// stmt example: ptr, ptr:example.com
-	host := s.domain
+	host := s.checkDomain
 	if strings.HasPrefix(stmt, "ptr:") {
 		host = stmt[4:]
 	}
@@ -504,8 +506,10 @@ func (s *Verifier) getMacroValue(name string) (rs string, err error) {
 	case 'l':
 		atIdx := strings.LastIndexByte(s.sender, '@')
 		rs = s.sender[:atIdx]
-	case 'o', 'd':
-		rs = s.domain
+	case 'o':
+		rs = s.localPart
+	case 'd':
+		rs = s.checkDomain
 	case 'i':
 		rs = formatIPDotNotation(s.ip)
 	case 'p':

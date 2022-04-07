@@ -19,7 +19,11 @@ func WrapCheckError(err error, result Result, message string) *CheckError {
 	return &CheckError{result: result, message: message, internal: err}
 }
 func (e *CheckError) Error() string {
-	return fmt.Sprintf("spf(%s): %s: %s", e.result, e.message, e.internal.Error())
+	if e.internal == nil {
+		return fmt.Sprintf("spf(%s): %s", e.result, e.message)
+	} else {
+		return fmt.Sprintf("spf(%s): %s: %s", e.result, e.message, e.internal.Error())
+	}
 }
 
 func (e *CheckError) Unwrap() error {
