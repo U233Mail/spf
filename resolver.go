@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/netip"
 	"sync/atomic"
 )
 
@@ -11,11 +12,11 @@ type DNSResolver interface {
 	// LookupTXT returns all TXT records for the given domain.
 	LookupTXT(ctx context.Context, name string) ([]string, error)
 
-	// LookupIP returns all IP addresses of the given host.
+	// LookupNetIP returns all IP addresses of the given host.
 	// If network is "ip", IPv6 and IPv4 addresses are returned.
 	// If network is "ip4", only IPv4 addresses are returned.
 	// If network is "ip6", only IPv6 addresses are returned.
-	LookupIP(ctx context.Context, network, host string) ([]net.IP, error)
+	LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error)
 
 	// LookupMX returns all MX records (host and priority) for a domain.
 	LookupMX(ctx context.Context, name string) ([]*net.MX, error)
@@ -77,7 +78,7 @@ func (r *LimitResolver) LookupTXT(ctx context.Context, name string) ([]string, e
 	return rs, r.wrapError(err)
 }
 
-func (r *LimitResolver) LookupIP(ctx context.Context, network, host string) ([]net.IP, error) {
+func (r *LimitResolver) LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error) {
 	lookupTimes := int32(1)
 	if network == "ip" { // "ip" means both IPv4(A) and IPv6(AAAA)
 		lookupTimes = 2
@@ -85,7 +86,7 @@ func (r *LimitResolver) LookupIP(ctx context.Context, network, host string) ([]n
 	if err := r.increaseLookup(lookupTimes); err != nil {
 		return nil, err
 	}
-	rs, err := r.resolver.LookupIP(ctx, network, host)
+	rs, err := r.resolver.LookupNetIP(ctx, network, host)
 	return rs, r.wrapError(err)
 }
 

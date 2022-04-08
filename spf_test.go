@@ -2,6 +2,7 @@ package spf
 
 import (
 	"net"
+	"net/netip"
 	"reflect"
 	"testing"
 
@@ -40,13 +41,13 @@ func Test_reverseStringSlice(t *testing.T) {
 func Test_formatIPDotNotation(t *testing.T) {
 	tests := []struct {
 		name  string
-		input net.IP
+		input netip.Addr
 		want  string
 	}{
-		{"IPv4", net.ParseIP("192.0.2.1"), "192.0.2.1"},
+		{"IPv4", netip.MustParseAddr("192.0.2.1"), "192.0.2.1"},
 		{
 			"IPv6",
-			net.ParseIP("2001:db8::1"),
+			netip.MustParseAddr("2001:db8::1"),
 			"2.0.0.1.0.d.b.8.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.1",
 		},
 	}
@@ -62,7 +63,7 @@ func Test_formatIPDotNotation(t *testing.T) {
 func TestVerifier_getMacroValue(t *testing.T) {
 	s := NewVerifier(
 		"strong-bad@email.example.com",
-		net.ParseIP("192.0.2.3"),
+		netip.MustParseAddr("192.0.2.3"),
 		"another.example.com",
 	)
 
@@ -105,12 +106,12 @@ func TestVerifier_getMacroValue(t *testing.T) {
 func TestVerifier_expandMacros(t *testing.T) {
 	v4 := NewVerifier(
 		"strong-bad@email.example.com",
-		net.ParseIP("192.0.2.3"),
+		netip.MustParseAddr("192.0.2.3"),
 		"another.example.com",
 	)
 	v6 := NewVerifier(
 		"strong-bad@email.example.com",
-		net.ParseIP("2001:db8::cb01"),
+		netip.MustParseAddr("2001:db8::cb01"),
 		"another.example.com",
 	)
 	tests := []struct {
@@ -188,7 +189,7 @@ func TestVerifier_checkMechanismMX(t *testing.T) {
 	}
 	for _, tt := range cases {
 		t.Run(tt.stmt, func(t *testing.T) {
-			s := NewVerifier(tt.sender, net.ParseIP(tt.ip), tt.helloDomain)
+			s := NewVerifier(tt.sender, netip.MustParseAddr(tt.ip), tt.helloDomain)
 			s.SetResolver(resolver)
 			matched, err := s.checkMechanismMX(tt.stmt)
 			if (err != nil) != tt.wantErr {

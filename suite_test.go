@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"testing"
 
@@ -168,7 +169,7 @@ func TestVerifier_Test(t *testing.T) {
 			}
 			for tName, tt := range suite.Tests {
 				t.Run(tName, func(t *testing.T) {
-					v := NewVerifier(tt.MailFrom, net.ParseIP(tt.Host), tt.Helo)
+					v := NewVerifier(tt.MailFrom, netip.MustParseAddr(tt.Host), tt.Helo)
 					v.SetResolver(r)
 					got, err := v.Test(context.TODO())
 
@@ -293,7 +294,7 @@ func TestVerifier_RFC7208Appendix1(t *testing.T) {
 			}
 			addMockSPFRecord(resolver, "example.com", s.spf)
 
-			v := NewVerifier("test@example.com", net.ParseIP(s.ip), "example.net")
+			v := NewVerifier("test@example.com", netip.MustParseAddr(s.ip), "example.net")
 			v.SetResolver(resolver)
 
 			got, err := v.Test(context.TODO())
@@ -315,7 +316,7 @@ func TestVerifier_RFC7208Appendix2(t *testing.T) {
 	addMockSPFRecord(resolver, "example.org", "v=spf1 include:example.com include:example.net -all")
 	addMockSPFRecord(resolver, "la.example.org", "v=spf1 redirect=example.org")
 
-	ip := net.ParseIP("192.0.2.129")
+	ip := netip.MustParseAddr("192.0.2.129")
 	v := NewVerifier("test@la.example.org", ip, "example.net")
 	v.SetResolver(resolver)
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"regexp"
 	"strconv"
 	"strings"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/miekg/dns"
 )
+
+//todo: add Received-SPF header generation
 
 // Qualifier for SPF DNS record's directive https://datatracker.ietf.org/doc/html/rfc7208#section-4.6.2
 type Qualifier byte
@@ -58,7 +61,7 @@ const (
 // sender is the email address of the sender (we don't check if it's valid)
 // ip is the remote IP address of current connection
 // helloDomain is the domain of the SMTP HELO command (only used for %{h} macro)
-func NewVerifier(sender string, ip net.IP, helloDomain string) *Verifier {
+func NewVerifier(sender string, ip netip.Addr, helloDomain string) *Verifier {
 	atIdx := strings.LastIndexByte(sender, '@')
 	s := &Verifier{
 		sender:      sender,
@@ -69,6 +72,7 @@ func NewVerifier(sender string, ip net.IP, helloDomain string) *Verifier {
 		timeout:     defaultSPFTimeout,
 		lookups:     0,
 	}
+	s.checkDomain = s.localPart // for tests which not call checkHost()
 	s.SetResolver(net.DefaultResolver)
 	return s
 }
@@ -77,7 +81,7 @@ func NewVerifier(sender string, ip net.IP, helloDomain string) *Verifier {
 type Verifier struct {
 	sender      string
 	localPart   string // extracted from sender
-	ip          net.IP
+	ip          netip.Addr
 	helloDomain string
 
 	resolver    *LimitResolver
@@ -258,7 +262,7 @@ func (s *Verifier) checkMechanismA(stmt string) (bool, *CheckError) {
 		return false, WrapCheckError(err, ResultPermError, "parse domain-spec failed")
 	}
 
-	ips, err := s.resolver.LookupIP(s.ctx, "ip", host)
+	ips, err := s.resolver.LookupNetIP(s.ctx, "ip", host)
 	if err != nil {
 		return false, err.(*CheckError)
 	}
@@ -291,7 +295,7 @@ func (s *Verifier) checkMechanismMX(stmt string) (bool, *CheckError) {
 
 	for _, mx := range hosts {
 
-		ips, err := s.resolver.LookupIP(s.ctx, "ip", mx.Host)
+		ips, err := s.resolver.LookupNetIP(s.ctx, "ip", mx.Host)
 		if err != nil {
 			return false, err.(*CheckError)
 		}
@@ -343,14 +347,12 @@ func (s *Verifier) parseHostDualCIDR(stmt string) (host string, v4Prefix int, v6
 	return
 }
 
-func (s *Verifier) checkIPDualCIDR(target, ipNet net.IP, v4Prefix int, v6Prefix int) bool {
-	cidrLen := net.IPv6len * 8
+func (s *Verifier) checkIPDualCIDR(target, ipNet netip.Addr, v4Prefix int, v6Prefix int) bool {
 	cidrPfx := v6Prefix
-	if ipNet.To4() != nil {
-		cidrLen = net.IPv4len * 8
+	if ipNet.Is4() {
 		cidrPfx = v4Prefix
 	}
-	cidrNet := net.IPNet{IP: ipNet, Mask: net.CIDRMask(cidrPfx, cidrLen)}
+	cidrNet := netip.PrefixFrom(ipNet, cidrPfx)
 	return cidrNet.Contains(target)
 }
 
@@ -376,19 +378,23 @@ func (s *Verifier) checkMechanismPTR(stmt string) (bool, *CheckError) {
 		return false, err.(*CheckError)
 	}
 
+	network := "ip6"
+	if s.ip.Is4() {
+		network = "ip4"
+	}
+
 	for _, name := range names {
 		if !dns.IsSubDomain(dns.Fqdn(host), name) {
 			continue
 		}
 
-		//todo: use netip.Addr and sepcify "ip4" or "ip6"
-		ips, err := s.resolver.LookupIP(s.ctx, "ip", name)
+		ips, err := s.resolver.LookupNetIP(s.ctx, network, name)
 		if err != nil {
 			return false, err.(*CheckError)
 		}
 
 		for _, ip := range ips {
-			if s.ip.Equal(ip) {
+			if s.ip.Compare(ip) == 0 {
 				return true, nil
 			}
 		}
@@ -403,7 +409,7 @@ func (s *Verifier) checkMechanismIP(stmt string) (bool, *CheckError) {
 	// stmt example: ip4:192.168.0.1, ip6:2001:db8::, ip4:192.168.0.1/24, ip6:2001:db8::/32
 	ipStr := stmt[4:]
 	if strings.ContainsRune(ipStr, '/') {
-		_, ipNet, err := net.ParseCIDR(ipStr)
+		ipNet, err := netip.ParsePrefix(ipStr)
 		if err != nil {
 			return false, NewCheckError(ResultPermError, "invalid CIDR: "+ipStr)
 		}
@@ -411,11 +417,11 @@ func (s *Verifier) checkMechanismIP(stmt string) (bool, *CheckError) {
 			return true, nil
 		}
 	} else {
-		ip := net.ParseIP(ipStr)
-		if ip == nil {
+		ip, err := netip.ParseAddr(ipStr)
+		if err != nil {
 			return false, NewCheckError(ResultPermError, "invalid IP: "+ipStr)
 		}
-		if ip.Equal(s.ip) {
+		if ip.Compare(s.ip) == 0 {
 			return true, nil
 		}
 	}
@@ -433,7 +439,8 @@ func (s *Verifier) checkMechanismExists(stmt string) (bool, *CheckError) {
 	}
 	// domain is used for a DNS A RR lookup
 	// (even when the connection type is IPv6)
-	ips, err := s.resolver.LookupIP(s.ctx, "ip4", host)
+	ips, err := s.resolver.LookupNetIP(s.ctx, "ip4", host)
+	// todo: process not-found error
 	if err != nil {
 		return false, err.(*CheckError)
 	}
@@ -517,7 +524,7 @@ func (s *Verifier) getMacroValue(name string) (rs string, err error) {
 		// https://datatracker.ietf.org/doc/html/rfc7208#section-7.3
 		rs = "unknown"
 	case 'v':
-		if s.ip.To4() != nil {
+		if s.ip.Is4() {
 			rs = "in-addr"
 		} else {
 			rs = "ip6"
@@ -569,15 +576,15 @@ func reverseStringSlice(s []string) {
 	}
 }
 
-func formatIPDotNotation(ip net.IP) string {
-	if ip.To4() != nil {
+func formatIPDotNotation(ip netip.Addr) string {
+	if ip.Is4() {
 		return ip.String()
 	}
 
 	// For IPv6 addresses, the "i" macro expands to a dot-format address
 	// https://datatracker.ietf.org/doc/html/rfc7208#section-7.3
 	buf := make([]byte, net.IPv6len*2)
-	hex.Encode(buf, ip)
+	hex.Encode(buf, ip.AsSlice())
 
 	var sb strings.Builder
 	sb.Grow(64)
