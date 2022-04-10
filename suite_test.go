@@ -328,3 +328,35 @@ func TestVerifier_RFC7208Appendix2(t *testing.T) {
 	}
 
 }
+func TestVerifier_RFC7208Appendix3(t *testing.T) {
+	resolver, err := loadMockResolver("./testdata/rfc7208-appendix-a3.zone")
+	if err != nil {
+		t.Error(err)
+	}
+	addMockSPFRecord(resolver, "example.com", "v=spf1 mx include:mobile-users._spf.%{d} include:remote-users._spf.%{d} -all")
+	addMockSPFRecord(resolver, "mobile-users._spf.example.com", "v=spf1 exists:%{l1r+}.%{d}")
+	addMockSPFRecord(resolver, "remote-users._spf.example.com", "v=spf1 exists:%{ir}.%{l1r+}.%{d}")
+
+	cases := []struct {
+		sender      string
+		ip          netip.Addr
+		helloDomain string
+		want        Result
+	}{
+		{"mary@example.com", netip.MustParseAddr("192.168.254.11"), "example.net", ResultPass},
+		{"joel@example.com", netip.MustParseAddr("192.168.15.16"), "example.net", ResultPass},
+	}
+	for _, tt := range cases {
+		t.Run(tt.sender, func(t *testing.T) {
+			v := NewVerifier(tt.sender, tt.ip, tt.helloDomain)
+			v.SetResolver(resolver)
+			got, err := v.Test(context.TODO())
+			if got != tt.want {
+				t.Errorf("incorrect result, want=%s, got=%s", tt.want, got)
+				t.Error(err)
+			}
+		})
+
+	}
+
+}

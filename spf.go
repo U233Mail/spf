@@ -123,11 +123,19 @@ func (s *Verifier) Test(ctx context.Context) (Result, error) {
 
 // checkHost checks the SPF record on the given domain
 func (s *Verifier) checkHost(domain string) (Result, error) {
+	originalDomain := s.checkDomain
 	s.checkDomain = domain
+	defer func() {
+		s.checkDomain = originalDomain
+	}()
+
 	records, err := s.resolver.LookupTXT(s.ctx, s.checkDomain)
 	if err != nil {
-		err2 := err.(*CheckError)
-		return err2.result, err
+		cErr := err.(*CheckError)
+		if cErr.IsNotFound() {
+			return ResultNone, nil
+		}
+		return cErr.result, err
 	}
 
 	var redirectHost string
@@ -170,7 +178,7 @@ func (s *Verifier) checkHost(domain string) (Result, error) {
 		}
 		return result, err
 	}
-	return ResultNone, nil
+	return ResultNeutral, nil
 }
 
 // checkMechanism returns (result, matched, error)
@@ -439,15 +447,17 @@ func (s *Verifier) checkMechanismExists(stmt string) (bool, *CheckError) {
 	}
 	// domain is used for a DNS A RR lookup
 	// (even when the connection type is IPv6)
-	ips, err := s.resolver.LookupNetIP(s.ctx, "ip4", host)
-	// todo: process not-found error
+	_, err = s.resolver.LookupNetIP(s.ctx, "ip4", host)
 	if err != nil {
-		return false, err.(*CheckError)
+		cErr := err.(*CheckError)
+		if cErr.IsNotFound() {
+			return false, nil
+		}
+		return false, cErr
 	}
-	if len(ips) > 0 {
-		return true, nil
-	}
-	return false, nil
+	// assume returned ip list is not empty
+	// while error is nil
+	return true, nil
 }
 
 // expandMacros expand domain-spec to hostname

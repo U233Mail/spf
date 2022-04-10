@@ -1,0 +1,39 @@
+; A domain with two mail servers, two hosts, and two servers
+; at the domain name
+$ORIGIN example.com.
+@           MX  10 mail-a
+            MX  20 mail-b
+            A   192.0.2.10
+            A   192.0.2.11
+amy         A   192.0.2.65
+bob         A   192.0.2.66
+mail-a      A   192.0.2.129
+mail-b      A   192.0.2.130
+www         CNAME example.com.
+
+; A related domain
+$ORIGIN example.org.
+@           MX  10 mail-c
+mail-c      A   192.0.2.140
+
+; The reverse IP for those addresses
+$ORIGIN 2.0.192.in-addr.arpa.
+10          PTR example.com.
+11          PTR example.com.
+65          PTR amy.example.com.
+66          PTR bob.example.com.
+129         PTR mail-a.example.com.
+130         PTR mail-b.example.com.
+140         PTR mail-c.example.org.
+
+; A rogue reverse IP domain that claims to be
+; something it's not
+$ORIGIN 0.0.10.in-addr.arpa.
+4           PTR bob.example.com.
+
+
+$ORIGIN _spf.example.com.
+mary.mobile-users                   A 127.0.0.2
+fred.mobile-users                   A 127.0.0.2
+15.15.168.192.joel.remote-users     A 127.0.0.2
+16.15.168.192.joel.remote-users     A 127.0.0.2

@@ -1,6 +1,10 @@
 package spf
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"net"
+)
 
 // CheckError is an error type for mechanisms checking failures.
 // If it returns an exception, mechanism processing ends and the exception value is returned.
@@ -28,4 +32,17 @@ func (e *CheckError) Error() string {
 
 func (e *CheckError) Unwrap() error {
 	return e.internal
+}
+
+func (e *CheckError) IsNotFound() bool {
+	if e.internal == nil {
+		return false
+	}
+	dErr := &net.DNSError{}
+	if errors.As(e.internal, &dErr) {
+		if dErr.IsNotFound {
+			return true
+		}
+	}
+	return false
 }
