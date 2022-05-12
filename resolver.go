@@ -59,13 +59,13 @@ func (r *LimitResolver) wrapError(err error) error {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return limitExceededDeadline
 	}
-	if errors.Is(err, &net.DNSError{}) {
-		err2 := err.(*net.DNSError)
-		if err2.Temporary() {
-			return NewCheckError(ResultTempError, "dns: "+err2.Error())
+	dnsErr := new(net.DNSError)
+	if errors.As(err, &dnsErr) {
+		if dnsErr.Temporary() {
+			return NewCheckError(ResultTempError, "dns: "+dnsErr.Error())
 		}
-		if err2.IsNotFound {
-			return NewCheckError(ResultNone, "dns: "+err2.Error())
+		if dnsErr.IsNotFound {
+			return NewCheckError(ResultNone, "dns: "+dnsErr.Error())
 		}
 	}
 	return WrapCheckError(err, ResultPermError, "dns: unexpected error")
