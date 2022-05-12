@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/netip"
 	"sync/atomic"
+
+	"github.com/miekg/dns"
 )
 
 type DNSResolver interface {
@@ -74,6 +76,9 @@ func (r *LimitResolver) LookupTXT(ctx context.Context, name string) ([]string, e
 	if err := r.increaseLookup(1); err != nil {
 		return nil, err
 	}
+	if _, ok := dns.IsDomainName(name); !ok {
+		return nil, NewCheckError(ResultPermError, "dns: invalid domain name")
+	}
 	rs, err := r.resolver.LookupTXT(ctx, name)
 	return rs, r.wrapError(err)
 }
@@ -86,6 +91,9 @@ func (r *LimitResolver) LookupNetIP(ctx context.Context, network, host string) (
 	if err := r.increaseLookup(lookupTimes); err != nil {
 		return nil, err
 	}
+	if _, ok := dns.IsDomainName(host); !ok {
+		return nil, NewCheckError(ResultPermError, "dns: invalid domain name")
+	}
 	rs, err := r.resolver.LookupNetIP(ctx, network, host)
 	return rs, r.wrapError(err)
 }
@@ -94,6 +102,9 @@ func (r *LimitResolver) LookupMX(ctx context.Context, name string) ([]*net.MX, e
 	if err := r.increaseLookup(1); err != nil {
 		return nil, err
 	}
+	if _, ok := dns.IsDomainName(name); !ok {
+		return nil, NewCheckError(ResultPermError, "dns: invalid domain name")
+	}
 	rs, err := r.resolver.LookupMX(ctx, name)
 	return rs, r.wrapError(err)
 }
@@ -101,6 +112,9 @@ func (r *LimitResolver) LookupMX(ctx context.Context, name string) ([]*net.MX, e
 func (r *LimitResolver) LookupAddr(ctx context.Context, addr string) ([]string, error) {
 	if err := r.increaseLookup(1); err != nil {
 		return nil, err
+	}
+	if _, err := netip.ParseAddr(addr); err != nil {
+		return nil, NewCheckError(ResultPermError, "dns: invalid IP address")
 	}
 	rs, err := r.resolver.LookupAddr(ctx, addr)
 	return rs, r.wrapError(err)

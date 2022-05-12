@@ -142,7 +142,7 @@ func (s *Verifier) checkHost(domain string) (Result, error) {
 	records, err := s.resolver.LookupTXT(s.ctx, s.checkDomain)
 	if err != nil {
 		cErr := err.(*CheckError)
-		if cErr.IsNotFound() {
+		if cErr.result == ResultNone {
 			return ResultNone, nil
 		}
 		return cErr.result, err
@@ -288,7 +288,11 @@ func (s *Verifier) checkMechanismA(stmt string) (bool, *CheckError) {
 
 	ips, err := s.resolver.LookupNetIP(s.ctx, "ip", host)
 	if err != nil {
-		return false, err.(*CheckError)
+		err2 := err.(*CheckError)
+		if err2.result == ResultNone {
+			return false, WrapCheckError(err, ResultPermError, "lookup host failed")
+		}
+		return false, err2
 	}
 
 	for _, ipNet := range ips {
@@ -314,7 +318,11 @@ func (s *Verifier) checkMechanismMX(stmt string) (bool, *CheckError) {
 
 	hosts, err := s.resolver.LookupMX(s.ctx, host)
 	if err != nil {
-		return false, err.(*CheckError)
+		err2 := err.(*CheckError)
+		if err2.result == ResultNone {
+			return false, WrapCheckError(err, ResultPermError, "lookup host failed")
+		}
+		return false, err2
 	}
 
 	for _, mx := range hosts {
@@ -385,7 +393,7 @@ func (s *Verifier) checkIPDualCIDR(target, ipNet netip.Addr, v4Prefix int, v6Pre
 // ref: https://datatracker.ietf.org/doc/html/rfc7208#section-5.5
 func (s *Verifier) checkMechanismPTR(stmt string) (bool, *CheckError) {
 	// stmt example: ptr, ptr:example.com
-	host := s.checkDomain
+	host := s.localPart
 	if strings.HasPrefix(stmt, "ptr:") {
 		host = stmt[4:]
 	}
@@ -408,7 +416,7 @@ func (s *Verifier) checkMechanismPTR(stmt string) (bool, *CheckError) {
 	}
 
 	for _, name := range names {
-		if !dns.IsSubDomain(name, host) {
+		if !dns.IsSubDomain(host, name) {
 			continue
 		}
 
@@ -466,7 +474,7 @@ func (s *Verifier) checkMechanismExists(stmt string) (bool, *CheckError) {
 	_, err = s.resolver.LookupNetIP(s.ctx, "ip4", host)
 	if err != nil {
 		cErr := err.(*CheckError)
-		if cErr.IsNotFound() {
+		if cErr.result == ResultNone {
 			return false, nil
 		}
 		return false, cErr
