@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"net/netip"
 	"regexp"
@@ -57,6 +59,8 @@ const (
 	ResultPermError Result = "permerror"
 )
 
+var discardLogger = log.New(io.Discard, "", 0)
+
 // NewVerifier creates a new SPF Verifier
 // sender is the email address of the sender (we don't check if it's valid)
 // ip is the remote IP address of current connection
@@ -69,6 +73,7 @@ func NewVerifier(sender string, ip netip.Addr, helloDomain string) *Verifier {
 		ip:          ip,
 		helloDomain: helloDomain,
 		ctx:         context.TODO(),
+		logger:      discardLogger,
 		timeout:     defaultSPFTimeout,
 		lookups:     0,
 	}
@@ -87,6 +92,7 @@ type Verifier struct {
 	resolver    *LimitResolver
 	timeout     time.Duration
 	ctx         context.Context
+	logger      *log.Logger
 	checkDomain string
 
 	lookups int // DNS lookup times
@@ -99,6 +105,10 @@ func (s *Verifier) SetResolver(resolver DNSResolver) {
 	} else {
 		s.resolver = NewLimitResolver(resolver, defaultMaxLookups)
 	}
+}
+
+func (s *Verifier) SetLogger(logger *log.Logger) {
+	s.logger = logger
 }
 
 const defaultSPFTimeout = time.Second * 20
@@ -151,15 +161,19 @@ func (s *Verifier) checkHost(domain string) (Result, error) {
 				// modifier "redirect"
 				// https://datatracker.ietf.org/doc/html/rfc7208#section-6.1
 				redirectHost, err = s.expandMacros(item[9:])
+				s.logger.Printf("modifier(redirect): %s", redirectHost)
 				if err != nil {
 					return ResultPermError, fmt.Errorf("spf: expand macros for %s failed: %w", item[8:], err)
 				}
 			case strings.HasPrefix(item, "exp="):
 				// modifier "exp" (explanation)
 				// https://datatracker.ietf.org/doc/html/rfc7208#section-6.2
+				s.logger.Println("modifier(exp): ignored")
 				continue // ignore, we are not supporting it for now
 			default:
+				s.logger.Printf("mechanism start(%s)", item)
 				result, matched, err := s.checkMechanism(item)
+				s.logger.Printf("mechanism result(%s): %s, %v, %v", item, result, matched, err)
 				if err != nil || matched {
 					return result, err
 				} // else { continue }
@@ -251,7 +265,7 @@ func (s *Verifier) checkMechanismInclude(stmt string) (bool, *CheckError) {
 	case ResultTempError, ResultPermError:
 		return false, WrapCheckError(err, r, "check include host failed")
 	case ResultNone:
-		return false, WrapCheckError(err, ResultPermError, "include host not exists")
+		return false, WrapCheckError(err, ResultPermError, fmt.Sprintf("include host not exists: %s", host))
 	default: // should not happen
 		return false, NewCheckError(ResultPermError, "unknown check result")
 	}
