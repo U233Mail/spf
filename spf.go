@@ -200,21 +200,23 @@ func (s *Verifier) checkMechanism(stmtCS string) (Result, bool, error) {
 	stmt := strings.ToLower(stmtCS) // case-insensitive
 
 	var result Result
+	hasQualifier := true
 	switch Qualifier(stmt[0]) {
 	case QualifierPass:
 		result = ResultPass
-		stmt = stmt[1:]
 	case QualifierFail:
 		result = ResultFail
-		stmt = stmt[1:]
 	case QualifierSoftFail:
 		result = ResultSoftFail
-		stmt = stmt[1:]
 	case QualifierNeutral:
 		result = ResultNeutral
-		stmt = stmt[1:]
 	default:
 		result = ResultPass
+		hasQualifier = false
+	}
+	if hasQualifier {
+		stmt = stmt[1:]
+		stmtCS = stmtCS[1:]
 	}
 
 	var matched bool
