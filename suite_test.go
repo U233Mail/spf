@@ -251,6 +251,13 @@ func addMockSPFRecord(resolver *mockdns.Resolver, domain, record string) {
 	resolver.Zones[domain] = zone
 }
 
+type SPFTestCase struct {
+	sender      string
+	ip          netip.Addr
+	helloDomain string
+	want        Result
+}
+
 func TestVerifier_RFC7208Appendix1(t *testing.T) {
 
 	var cases = []struct {
@@ -337,14 +344,38 @@ func TestVerifier_RFC7208Appendix3(t *testing.T) {
 	addMockSPFRecord(resolver, "mobile-users._spf.example.com", "v=spf1 exists:%{l1r+}.%{d}")
 	addMockSPFRecord(resolver, "remote-users._spf.example.com", "v=spf1 exists:%{ir}.%{l1r+}.%{d}")
 
-	cases := []struct {
-		sender      string
-		ip          netip.Addr
-		helloDomain string
-		want        Result
-	}{
+	cases := []SPFTestCase{
 		{"mary@example.com", netip.MustParseAddr("192.168.254.11"), "example.net", ResultPass},
 		{"joel@example.com", netip.MustParseAddr("192.168.15.16"), "example.net", ResultPass},
+	}
+	for _, tt := range cases {
+		t.Run(tt.sender, func(t *testing.T) {
+			v := NewVerifier(tt.sender, tt.ip, tt.helloDomain)
+			v.SetResolver(resolver)
+			got, err := v.Test(context.TODO())
+			if got != tt.want {
+				t.Errorf("incorrect result, want=%s, got=%s", tt.want, got)
+				t.Error(err)
+			}
+		})
+
+	}
+
+}
+
+func TestVerifier_RFC7208Appendix4(t *testing.T) {
+	resolver, err := loadMockResolver("./testdata/rfc7208-appendix-a3.zone")
+	if err != nil {
+		t.Error(err)
+	}
+	addMockSPFRecord(resolver, "example.com.", "v=spf1 -include:ip4._spf.%{d} -include:ptr._spf.%{d} +all")
+	addMockSPFRecord(resolver, "ip4._spf.example.com.", "v=spf1 -ip4:192.0.2.0/24 +all")
+	addMockSPFRecord(resolver, "ptr._spf.example.com.", "v=spf1 -ptr +all")
+
+	cases := []SPFTestCase{
+		{"mary@example.com", netip.MustParseAddr("192.0.2.10"), "example.net", ResultPass},
+		{"joel@example.com", netip.MustParseAddr("192.0.2.11"), "example.net", ResultPass},
+		{"joel@example.com", netip.MustParseAddr("192.0.3.10"), "example.net", ResultFail},
 	}
 	for _, tt := range cases {
 		t.Run(tt.sender, func(t *testing.T) {

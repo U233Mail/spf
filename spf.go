@@ -396,7 +396,7 @@ func (s *Verifier) checkMechanismPTR(stmt string) (bool, *CheckError) {
 	if host == "" {
 		return false, NewCheckError(ResultPermError, "invalid empty host in ptr")
 	}
-
+	host = dns.Fqdn(host)
 	names, err := s.resolver.LookupAddr(s.ctx, s.ip.String())
 	if err != nil {
 		return false, err.(*CheckError)
@@ -408,13 +408,13 @@ func (s *Verifier) checkMechanismPTR(stmt string) (bool, *CheckError) {
 	}
 
 	for _, name := range names {
-		if !dns.IsSubDomain(dns.Fqdn(host), name) {
+		if !dns.IsSubDomain(name, host) {
 			continue
 		}
 
 		ips, err := s.resolver.LookupNetIP(s.ctx, network, name)
 		if err != nil {
-			return false, err.(*CheckError)
+			continue
 		}
 
 		for _, ip := range ips {
